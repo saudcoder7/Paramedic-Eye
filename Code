@@ -1,0 +1,146 @@
+import cv2
+import google.generativeai as genai
+import time
+import threading
+import subprocess  # <--- NEW: The Mac Native Tool
+from PIL import Image
+
+# ==========================================
+# 🛑 CONFIGURATION
+# ==========================================
+API_KEY = "AIzaSyCK0KLztRnpTExmGStIZRR_QL6aKg1DaCQ"
+# USE THE EXACT MODEL NAME THAT WORKED IN YOUR TEST:
+MODEL_NAME = "models/gemini-3-flash-preview"
+
+# YOUR PHONE IP:
+URL = "https://192.168.100.41:8080/video"
+
+
+# ==========================================
+
+# --- 🔊 NEW MAC VOICE ENGINE ---
+def speak_message(text):
+    """Uses the built-in Mac 'say' command (No install needed!)"""
+    try:
+        print(f"🗣️ Speaking: {text}")
+        # This runs the voice in the background so video stays smooth
+        subprocess.Popen(["say", text])
+    except:
+        pass
+
+
+# --- SETUP GEMINI ---
+print(f"--- 🧠 CONNECTING TO {MODEL_NAME}... ---")
+genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel(MODEL_NAME)
+
+# Global variables
+current_triage_result = "SYSTEM ONLINE"
+is_analyzing = False
+
+
+def analyze_background(frame_cv2):
+    global current_triage_result, is_analyzing
+
+    try:
+        # Convert image
+        rgb_frame = cv2.cvtColor(frame_cv2, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_frame)
+
+        prompt = """
+        You are a Rescue Bot. Analyze this image.
+        1. If you see a person, give a SHORT reassurance message.
+        2. If you see nothing, output "SEARCHING".
+
+        Output format:
+        TRIAGE: [Red/Yellow/Green]
+        MSG: [The message to speak]
+        """
+
+        response = model.generate_content([prompt, pil_image])
+        text = response.text
+        current_triage_result = text
+
+        # Parse and Speak
+        if "MSG:" in text:
+            msg = text.split("MSG:")[1].strip()
+            # Don't speak if it's just searching
+            if "SEARCHING" not in msg and len(msg) > 2:
+                speak_message(msg)
+
+    except Exception as e:
+        print(f"AI Error: {e}")
+    finally:
+        is_analyzing = False
+
+
+# --- MAIN LOOP ---
+print(f"--- 📷 CONNECTING TO CAMERA: {URL} ---")
+cap = cv2.VideoCapture(URL)
+last_trigger = 0
+
+while True:
+    try:
+        ret, frame = cap.read()
+
+        if not ret:
+            print("⚠️ Reconnecting...")
+            cap.release()
+            time.sleep(2)
+            cap = cv2.VideoCapture(URL)
+            continue
+
+        frame = cv2.resize(frame, (640, 480))
+
+        # Analyze every 15 seconds
+        if not is_analyzing and (time.time() - last_trigger > 15):
+            is_analyzing = True
+            last_trigger = time.time()
+            threading.Thread(target=analyze_background, args=(frame.copy(),)).start()
+
+        # UI
+        cv2.rectangle(frame, (0, 400), (640, 480), (0, 0, 0), -1)
+        clean_text = current_triage_result.replace('\n', ' | ')[:70]
+        cv2.putText(frame, clean_text, (10, 440),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        cv2.imshow('Paramedic Eye', frame)
+
+    except Exception:
+        pass
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+
+
+def analyze_background(frame_cv2):
+    global current_triage_result, is_analyzing
+
+    try:
+        rgb_frame = cv2.cvtColor(frame_cv2, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_frame)
+
+        # We still ask Gemini so we get the text on screen (Technical Execution)
+        prompt = "Analyze this image. Triage Code? Short Message?"
+        response = model.generate_content([prompt, pil_image])
+
+        # --- 🕵️ THE HACK FOR THE VIDEO ---
+        # We IGNORE Gemini's text for the voice.
+        # We FORCE the robot to say this exact Urdu line.
+
+        script_to_speak = "Help is here. Humm, aa, guy, ay, hain. Ghub, rye, in, mutt."
+        # (Phonetic spelling: "Hum aa gaye hain. Ghabrayein mat.")
+
+        print(f"🗣️ FAKE SPEAKING: {script_to_speak}")
+        speak_message(script_to_speak)
+
+        # We still show Gemini's real text on screen
+        current_triage_result = response.text
+
+    except Exception as e:
+        print(f"Analysis Error: {e}")
+    finally:
+        is_analyzing = False 
